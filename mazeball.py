@@ -1,26 +1,57 @@
-import math
 import sys
+import math
 from dataclasses import dataclass
 import pygame
 
+from levels import Pos, Level, load_level
 
-@dataclass(frozen=True, eq=True)
-class Pos:
-    x: float
-    y: float
 
-    def __add__(v1, v2):
-        return Pos(v1.x + v2.x, v1.y + v2.y)
+@dataclass(frozen=True)
+class Settings:
 
-    def __sub__(v1, v2):
-        return Pos(v1.x - v2.x, v1.y - v2.y)
+    WIDTH: int = 800
+    HEIGHT: int = 600
+    FPS: int = 60
+    FONT_SIZE: int = 48
+    CAPTION: str = "Move the Ball to the Black Hole"
 
-    def __mul__(v, scalar):
-        return Pos(v.x * scalar, v.y * scalar)
+    SPRITE_PATH: str = "blue.png"
 
-    @property
-    def as_tuple(v):
-        return (v.x, v.y)
+    BALL_RADIUS: int = 20
+    BLACK_HOLE_RADIUS: int = 30
+    RED_HOLE_RADIUS: int = 26
+    WALL_THICKNESS: int = 10
+
+    DEADZONE: float = 0.20
+    BASE_ACCEL: float = 900.0
+    BOOST_MULT: float = 2.0
+    MAX_SPEED: float = 650.0
+    DRAG: float = 2.0
+    RESTITUTION: float = 0.60
+    UNSTUCK_KICK: float = 80.0
+    COLLISION_PASSES: int = 4
+
+    SPIN_MULT: float = 1.0
+
+    JOY_ACCEL_BUTTON: int = 0
+    KEY_ACCEL: tuple[int, ...] = (
+        pygame.K_SPACE,
+        pygame.K_LSHIFT,
+        pygame.K_RSHIFT,
+    )
+    KEY_RESTART: int = pygame.K_r
+    KEY_QUIT: int = pygame.K_q
+
+    WHITE: tuple[int, int, int] = (255, 255, 255)
+    GRAY: tuple[int, int, int] = (192, 192, 192)
+    BLUE: tuple[int, int, int] = (0, 0, 255)
+    BLACK: tuple[int, int, int] = (0, 0, 0)
+    RED: tuple[int, int, int] = (220, 0, 0)
+    GREEN_TEXT: tuple[int, int, int] = (0, 140, 0)
+    RED_TEXT: tuple[int, int, int] = (180, 0, 0)
+
+
+S = Settings()
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -60,21 +91,6 @@ class Maze:
     ):
         self.segments = segments
         self.thickness = thickness
-
-    @staticmethod
-    def from_flat_list(
-        flat_xy: list[float], thickness: float
-    ) -> "Maze":
-        if len(flat_xy) % 2 != 0:
-            raise ValueError(
-                "walls must contain an even number of values: x1,y1,x2,y2,..."
-            )
-        pts = [
-            Pos(float(flat_xy[i]), float(flat_xy[i + 1]))
-            for i in range(0, len(flat_xy), 2)
-        ]
-        segs = list(zip(pts, pts[1:]))
-        return Maze(segs, thickness)
 
     def draw(self, surface, color):
         for a, b in self.segments:
@@ -164,32 +180,26 @@ class GameState:
     ball_pos: Pos
     ball_vel: Pos
     ball_angle_deg: float
-    win_hole_pos: Pos
-    lose_holes: list[Pos]
-    status: str = "playing"
+    status: str
 
 
-DEADZONE = 0.20
-
-BASE_ACCEL = 900.0
-BOOST_MULT = 2
-MAX_SPEED = 650.0
-
-DRAG = 2.0
-RESTITUTION = 0.60
-UNSTUCK_KICK = 80.0
-COLLISION_PASSES = 4
+def new_game_state(level: Level) -> GameState:
+    return GameState(
+        ball_pos=level.start_pos,
+        ball_vel=Pos(0.0, 0.0),
+        ball_angle_deg=0.0,
+        status="playing",
+    )
 
 
 def update(
     state: GameState,
     maze: Maze,
+    settings: Settings,
+    level: Level,
     raw_dir: Pos,
     accelerate: bool,
     dt: float,
-    screen_w: int,
-    screen_h: int,
-    ball_radius: float,
 ) -> GameState:
     pos, vel, angle = (
         state.ball_pos,
@@ -204,55 +214,57 @@ def update(
             normalize(raw_dir) if throttle > 1e-6 else Pos(0.0, 0.0)
         )
 
-        accel_strength = BASE_ACCEL * (
-            BOOST_MULT if accelerate else 1.0
+        accel_strength = settings.BASE_ACCEL * (
+            settings.BOOST_MULT if accelerate else 1.0
         )
         a = dir_n * (accel_strength * throttle)
 
         vel = vel + a * dt
-
-        drag_factor = max(0.0, 1.0 - DRAG * dt)
-        vel = vel * drag_factor
+        vel = vel * max(0.0, 1.0 - settings.DRAG * dt)
 
         sp = length(vel)
-        if sp > MAX_SPEED:
-            vel = vel * (MAX_SPEED / sp)
+        if sp > settings.MAX_SPEED:
+            vel = vel * (settings.MAX_SPEED / sp)
 
         pos = pos + vel * dt
 
         sp = length(vel)
         if sp > 1e-3:
-            sign = 1.0 if vel.x >= 0 else -1.0
-            angle = (
-                angle
-                + sign
-                * (sp / max(1.0, ball_radius))
-                * dt
+            sign = (
+                1.0
+                if (abs(vel.x) >= abs(vel.y) and vel.x >= 0)
+                or (abs(vel.y) > abs(vel.x) and vel.y >= 0)
+                else -1.0
+            )
+            deg_per_sec = (
+                (sp / max(1.0, settings.BALL_RADIUS))
                 * (180.0 / math.pi)
-            ) % 360.0
+                * settings.SPIN_MULT
+            )
+            angle = (angle + sign * deg_per_sec * dt) % 360.0
 
     pos, vel = resolve_bounds(
         pos,
         vel,
-        ball_radius,
-        screen_w,
-        screen_h,
-        RESTITUTION,
-        UNSTUCK_KICK,
+        settings.BALL_RADIUS,
+        settings.WIDTH,
+        settings.HEIGHT,
+        settings.RESTITUTION,
+        settings.UNSTUCK_KICK,
     )
 
-    for _ in range(COLLISION_PASSES):
+    for _ in range(settings.COLLISION_PASSES):
         any_hit = False
         for a0, b0 in maze.segments:
             pos, vel, hit = resolve_circle_against_segment(
                 pos,
                 vel,
-                ball_radius,
+                settings.BALL_RADIUS,
                 a0,
                 b0,
                 maze.thickness,
-                RESTITUTION,
-                UNSTUCK_KICK,
+                settings.RESTITUTION,
+                settings.UNSTUCK_KICK,
             )
             any_hit |= hit
         if not any_hit:
@@ -261,13 +273,16 @@ def update(
     status = state.status
     if status == "playing":
         if (
-            dist(pos, state.win_hole_pos)
-            < ball_radius + BLACK_HOLE_RADIUS
+            dist(pos, level.win_hole)
+            < settings.BALL_RADIUS + settings.BLACK_HOLE_RADIUS
         ):
             status = "won"
         else:
-            for hp in state.lose_holes:
-                if dist(pos, hp) < ball_radius + RED_HOLE_RADIUS:
+            for hp in level.red_holes:
+                if (
+                    dist(pos, hp)
+                    < settings.BALL_RADIUS + settings.RED_HOLE_RADIUS
+                ):
                     status = "dead"
                     break
 
@@ -275,85 +290,47 @@ def update(
         ball_pos=pos,
         ball_vel=vel,
         ball_angle_deg=angle,
-        win_hole_pos=state.win_hole_pos,
-        lose_holes=state.lose_holes,
         status=status,
     )
 
 
 pygame.init()
-
-WIDTH, HEIGHT = 800, 600
-BALL_RADIUS = 20
-BLACK_HOLE_RADIUS = 30
-RED_HOLE_RADIUS = 26
-WALL_THICKNESS = 10
-
-BLUE = (0, 0, 255)
-BLACK = (0, 0, 0)
-RED = (220, 0, 0)
-GRAY = (192, 192, 192)
-WHITE = (255, 255, 255)
-
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Move the Ball to the Black Hole")
+screen = pygame.display.set_mode((S.WIDTH, S.HEIGHT))
+pygame.display.set_caption(S.CAPTION)
 clock = pygame.time.Clock()
-font = pygame.font.SysFont(None, 48)
+font = pygame.font.SysFont(None, S.FONT_SIZE)
 
 
-SPRITE_PATH = "blue.png"
-try:
-    ball_img_src = pygame.image.load(SPRITE_PATH).convert_alpha()
-    ball_img = pygame.transform.smoothscale(
-        ball_img_src, (BALL_RADIUS * 2, BALL_RADIUS * 2)
-    )
-    sprite_ok = True
-except Exception as e:
-    print(f"Could not load '{SPRITE_PATH}': {e}")
-    ball_img = None
-    sprite_ok = False
-
-
-walls = [
-    100,
-    100,
-    700,
-    100,
-    700,
-    250,
-    200,
-    250,
-    200,
-    500,
-    700,
-    500,
-]
-maze = Maze.from_flat_list(walls, thickness=WALL_THICKNESS)
-
-
-win_hole = Pos(WIDTH / 2, HEIGHT / 2 + 200)
-red_holes = [
-    Pos(300, 180),
-    Pos(520, 360),
-    Pos(420, 520),
-]
-
-
-def new_game_state() -> GameState:
-    return GameState(
-        ball_pos=Pos(WIDTH / 2, HEIGHT / 2),
-        ball_vel=Pos(0.0, 0.0),
-        ball_angle_deg=0.0,
-        win_hole_pos=win_hole,
-        lose_holes=red_holes,
-        status="playing",
-    )
-
-
-state = new_game_state()
-state = update(
-    state, maze, Pos(0.0, 0.0), False, 0.0, WIDTH, HEIGHT, BALL_RADIUS
+level = load_level(
+    "levels/level01.json", default_wall_thickness=S.WALL_THICKNESS
 )
+maze = Maze(level.walls, thickness=level.wall_thickness)
+
+
+ball_img = None
+try:
+    src = pygame.image.load(S.SPRITE_PATH).convert_alpha()
+    ball_img = pygame.transform.smoothscale(
+        src, (S.BALL_RADIUS * 2, S.BALL_RADIUS * 2)
+    )
+except Exception as e:
+    print(
+        f"Could not load '{S.SPRITE_PATH}': {e} (falling back to circle)"
+    )
+
+
+def draw_ball(surface, center: Pos, angle_deg: float):
+    if ball_img is None:
+        pygame.draw.circle(
+            surface,
+            S.BLUE,
+            (int(center.x), int(center.y)),
+            S.BALL_RADIUS,
+        )
+        return
+    rotated = pygame.transform.rotozoom(ball_img, -angle_deg, 1.0)
+    rect = rotated.get_rect(center=(int(center.x), int(center.y)))
+    surface.blit(rotated, rect)
 
 
 joystick_available = False
@@ -362,52 +339,51 @@ if pygame.joystick.get_count() > 0:
     joystick.init()
     joystick_available = True
 
-
-def draw_ball(surface, center: Pos, angle_deg: float):
-    if ball_img is None:
-        pygame.draw.circle(
-            surface, BLUE, (int(center.x), int(center.y)), BALL_RADIUS
-        )
-        return
-
-    rotated = pygame.transform.rotozoom(ball_img, -angle_deg, 1.0)
-    rect = rotated.get_rect(center=(int(center.x), int(center.y)))
-    surface.blit(rotated, rect)
+state = new_game_state(level)
+state = update(
+    state,
+    maze,
+    S,
+    level,
+    raw_dir=Pos(0.0, 0.0),
+    accelerate=False,
+    dt=0.0,
+)
 
 
 while True:
-    dt = clock.tick(60) / 1000.0
+    dt = clock.tick(S.FPS) / 1000.0
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT or (
-            event.type == pygame.KEYDOWN and event.key == pygame.K_q
+            event.type == pygame.KEYDOWN and event.key == S.KEY_QUIT
         ):
             pygame.quit()
             sys.exit()
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-            state = new_game_state()
+        if (
+            event.type == pygame.KEYDOWN
+            and event.key == S.KEY_RESTART
+        ):
+            state = new_game_state(level)
             state = update(
                 state,
                 maze,
-                Pos(0.0, 0.0),
-                False,
-                0.0,
-                WIDTH,
-                HEIGHT,
-                BALL_RADIUS,
+                S,
+                level,
+                raw_dir=Pos(0.0, 0.0),
+                accelerate=False,
+                dt=0.0,
             )
 
     if joystick_available:
         x = joystick.get_axis(0)
         y = joystick.get_axis(1)
-
-        if abs(x) < DEADZONE:
+        if abs(x) < S.DEADZONE:
             x = 0.0
-        if abs(y) < DEADZONE:
+        if abs(y) < S.DEADZONE:
             y = 0.0
-
         direction = Pos(x, y)
-        accelerate = bool(joystick.get_button(0))
+        accelerate = bool(joystick.get_button(S.JOY_ACCEL_BUTTON))
     else:
         keys = pygame.key.get_pressed()
         dx = (1 if keys[pygame.K_RIGHT] else 0) - (
@@ -417,47 +393,34 @@ while True:
             1 if keys[pygame.K_UP] else 0
         )
         direction = Pos(float(dx), float(dy))
-        accelerate = bool(
-            keys[pygame.K_SPACE]
-            or keys[pygame.K_LSHIFT]
-            or keys[pygame.K_RSHIFT]
-        )
+        accelerate = any(keys[k] for k in S.KEY_ACCEL)
 
-    state = update(
-        state,
-        maze,
-        direction,
-        accelerate,
-        dt,
-        WIDTH,
-        HEIGHT,
-        BALL_RADIUS,
-    )
+    state = update(state, maze, S, level, direction, accelerate, dt)
 
-    screen.fill(WHITE)
-    maze.draw(screen, GRAY)
+    screen.fill(S.WHITE)
+    maze.draw(screen, S.GRAY)
 
-    for hp in state.lose_holes:
+    for hp in level.red_holes:
         pygame.draw.circle(
-            screen, RED, (int(hp.x), int(hp.y)), RED_HOLE_RADIUS
+            screen, S.RED, (int(hp.x), int(hp.y)), S.RED_HOLE_RADIUS
         )
     pygame.draw.circle(
         screen,
-        BLACK,
-        (int(state.win_hole_pos.x), int(state.win_hole_pos.y)),
-        BLACK_HOLE_RADIUS,
+        S.BLACK,
+        (int(level.win_hole.x), int(level.win_hole.y)),
+        S.BLACK_HOLE_RADIUS,
     )
 
     draw_ball(screen, state.ball_pos, state.ball_angle_deg)
 
     if state.status == "won":
         msg = font.render(
-            "YOU WIN! (R to restart)", True, (0, 140, 0)
+            "YOU WIN! (R to restart)", True, S.GREEN_TEXT
         )
         screen.blit(msg, (20, 20))
     elif state.status == "dead":
         msg = font.render(
-            "YOU DIED! (R to restart)", True, (180, 0, 0)
+            "YOU DIED! (R to restart)", True, S.RED_TEXT
         )
         screen.blit(msg, (20, 20))
 

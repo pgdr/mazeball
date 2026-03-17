@@ -1,0 +1,11 @@
+{
+  "level_id": "level06",
+  "name": "SVG",
+  "start_pos": [1550, 150],
+  "goal_hole": [300, 140],
+    "red_holes": [[466,85],[466,470]],
+  "wall_thickness": 2,
+  "walls":
+
+[]
+}

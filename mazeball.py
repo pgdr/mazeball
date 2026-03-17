@@ -9,23 +9,26 @@ from levels import Pos, Level, load_level
 @dataclass(frozen=True)
 class Settings:
 
-    WIDTH: int = 800
-    HEIGHT: int = 600
+    WIDTH: int = 1600
+    HEIGHT: int = 900
     FPS: int = 60
     FONT_SIZE: int = 48
     CAPTION: str = "Move the Ball to the Black Hole"
 
     SPRITE_PATH: str = "blue.png"
+    BROWN_SPRITE_PATH: str = "brown.png"
+    GOAL_SPRITE_PATH: str = "goal.png"
 
     BALL_RADIUS: int = 20
     BLACK_HOLE_RADIUS: int = 30
     RED_HOLE_RADIUS: int = 26
+    GOAL_RADIUS: int = 26
     WALL_THICKNESS: int = 10
 
     DEADZONE: float = 0.20
-    BASE_ACCEL: float = 900.0
-    BOOST_MULT: float = 2.0
-    MAX_SPEED: float = 650.0
+    BASE_ACCEL: float = 1500.0
+    BOOST_MULT: float = 3.0
+    MAX_SPEED: float = 1000.0
     DRAG: float = 2.0
     RESTITUTION: float = 0.60
     UNSTUCK_KICK: float = 80.0
@@ -49,6 +52,8 @@ class Settings:
     RED: tuple[int, int, int] = (220, 0, 0)
     GREEN_TEXT: tuple[int, int, int] = (0, 140, 0)
     RED_TEXT: tuple[int, int, int] = (180, 0, 0)
+    WALL_COLOR: tuple[int, int, int] = (120, 122, 255)
+    GOAL_COLOR = (0, 200, 0)
 
 
 S = Settings()
@@ -86,9 +91,7 @@ def closest_point_on_segment(p: Pos, a: Pos, b: Pos) -> Pos:
 
 
 class Maze:
-    def __init__(
-        self, segments: list[tuple[Pos, Pos]], thickness: float
-    ):
+    def __init__(self, segments: list[tuple[Pos, Pos]], thickness: float):
         self.segments = segments
         self.thickness = thickness
 
@@ -200,6 +203,7 @@ def update(
     raw_dir: Pos,
     accelerate: bool,
     dt: float,
+    stop=False,
 ) -> GameState:
     pos, vel, angle = (
         state.ball_pos,
@@ -210,9 +214,7 @@ def update(
     if state.status == "playing":
         mag = length(raw_dir)
         throttle = clamp(mag, 0.0, 1.0)
-        dir_n = (
-            normalize(raw_dir) if throttle > 1e-6 else Pos(0.0, 0.0)
-        )
+        dir_n = normalize(raw_dir) if throttle > 1e-6 else Pos(0.0, 0.0)
 
         accel_strength = settings.BASE_ACCEL * (
             settings.BOOST_MULT if accelerate else 1.0
@@ -272,23 +274,17 @@ def update(
 
     status = state.status
     if status == "playing":
-        if (
-            dist(pos, level.win_hole)
-            < settings.BALL_RADIUS + settings.BLACK_HOLE_RADIUS
-        ):
+        if dist(pos, level.goal_hole) < settings.BALL_RADIUS:
             status = "won"
         else:
             for hp in level.red_holes:
-                if (
-                    dist(pos, hp)
-                    < settings.BALL_RADIUS + settings.RED_HOLE_RADIUS
-                ):
+                if dist(pos, hp) < settings.BALL_RADIUS + settings.RED_HOLE_RADIUS - 5:
                     status = "dead"
                     break
 
     return GameState(
         ball_pos=pos,
-        ball_vel=vel,
+        ball_vel=Pos(0, 0) if stop else vel,
         ball_angle_deg=angle,
         status=status,
     )
@@ -299,38 +295,51 @@ screen = pygame.display.set_mode((S.WIDTH, S.HEIGHT))
 pygame.display.set_caption(S.CAPTION)
 clock = pygame.time.Clock()
 font = pygame.font.SysFont(None, S.FONT_SIZE)
+bear_sound = pygame.mixer.Sound("bear.wav")
+bear_playing = False
 
+level_fname = sys.argv[1]
 
-level = load_level(
-    "levels/level01.json", default_wall_thickness=S.WALL_THICKNESS
-)
+level = load_level(level_fname, default_wall_thickness=S.WALL_THICKNESS)
 maze = Maze(level.walls, thickness=level.wall_thickness)
 
 
 ball_img = None
 try:
     src = pygame.image.load(S.SPRITE_PATH).convert_alpha()
-    ball_img = pygame.transform.smoothscale(
+    ball_img = pygame.transform.smoothscale(src, (S.BALL_RADIUS * 2, S.BALL_RADIUS * 2))
+except Exception as e:
+    print(f"Could not load '{S.SPRITE_PATH}': {e} (falling back to circle)")
+
+
+brown_img = None
+try:
+    src = pygame.image.load(S.BROWN_SPRITE_PATH).convert_alpha()
+    brown_img = pygame.transform.smoothscale(
         src, (S.BALL_RADIUS * 2, S.BALL_RADIUS * 2)
     )
 except Exception as e:
-    print(
-        f"Could not load '{S.SPRITE_PATH}': {e} (falling back to circle)"
-    )
+    print(f"Could not load '{S.BROWN_SPRITE_PATH}': {e} (falling back to circle)")
 
 
-def draw_ball(surface, center: Pos, angle_deg: float):
-    if ball_img is None:
-        pygame.draw.circle(
-            surface,
-            S.BLUE,
-            (int(center.x), int(center.y)),
-            S.BALL_RADIUS,
-        )
-        return
-    rotated = pygame.transform.rotozoom(ball_img, -angle_deg, 1.0)
+goal_img = None
+try:
+    src = pygame.image.load(S.GOAL_SPRITE_PATH).convert_alpha()
+    goal_img = pygame.transform.smoothscale(src, (S.GOAL_RADIUS * 2, S.GOAL_RADIUS * 2))
+except Exception as e:
+    print(f"Could not load '{S.GOAL_SPRITE_PATH}': {e} (falling back to circle)")
+
+
+def draw_ball(surface, center: Pos, angle_deg: float, brown=False):
+    img = ball_img if not brown else brown_img
+    rotated = pygame.transform.rotozoom(img, -angle_deg, 1.0)
     rect = rotated.get_rect(center=(int(center.x), int(center.y)))
     surface.blit(rotated, rect)
+
+
+def draw_goal(surface, center: Pos):
+    rect = goal_img.get_rect(center=center)
+    surface.blit(goal_img, rect)
 
 
 joystick_available = False
@@ -360,10 +369,7 @@ while True:
         ):
             pygame.quit()
             sys.exit()
-        if (
-            event.type == pygame.KEYDOWN
-            and event.key == S.KEY_RESTART
-        ):
+        if event.type == pygame.KEYDOWN and event.key == S.KEY_RESTART:
             state = new_game_state(level)
             state = update(
                 state,
@@ -375,6 +381,21 @@ while True:
                 dt=0.0,
             )
 
+    JOY_A, JOY_B, JOY_C = 2, 1, 5
+    JOY_PRESS_A, JOY_PRESS_B, JOY_PRESS_C = (
+        bool(joystick.get_button(JOY_A)),
+        bool(joystick.get_button(JOY_B)),
+        bool(joystick.get_button(JOY_C)),
+    )
+    if JOY_PRESS_B:
+        if not bear_playing:
+            bear_playing = True
+            bear_sound.play()
+    else:
+        bear_playing = False
+
+    # print(JOY_PRESS_A, JOY_PRESS_B, JOY_PRESS_C)
+
     if joystick_available:
         x = joystick.get_axis(0)
         y = joystick.get_axis(1)
@@ -383,45 +404,30 @@ while True:
         if abs(y) < S.DEADZONE:
             y = 0.0
         direction = Pos(x, y)
-        accelerate = bool(joystick.get_button(S.JOY_ACCEL_BUTTON))
+        accelerate = JOY_PRESS_A
     else:
         keys = pygame.key.get_pressed()
-        dx = (1 if keys[pygame.K_RIGHT] else 0) - (
-            1 if keys[pygame.K_LEFT] else 0
-        )
-        dy = (1 if keys[pygame.K_DOWN] else 0) - (
-            1 if keys[pygame.K_UP] else 0
-        )
+        dx = (1 if keys[pygame.K_RIGHT] else 0) - (1 if keys[pygame.K_LEFT] else 0)
+        dy = (1 if keys[pygame.K_DOWN] else 0) - (1 if keys[pygame.K_UP] else 0)
         direction = Pos(float(dx), float(dy))
         accelerate = any(keys[k] for k in S.KEY_ACCEL)
 
-    state = update(state, maze, S, level, direction, accelerate, dt)
+    state = update(state, maze, S, level, direction, accelerate, dt, stop=JOY_PRESS_C)
 
     screen.fill(S.WHITE)
-    maze.draw(screen, S.GRAY)
+    maze.draw(screen, S.WALL_COLOR)
 
     for hp in level.red_holes:
-        pygame.draw.circle(
-            screen, S.RED, (int(hp.x), int(hp.y)), S.RED_HOLE_RADIUS
-        )
-    pygame.draw.circle(
-        screen,
-        S.BLACK,
-        (int(level.win_hole.x), int(level.win_hole.y)),
-        S.BLACK_HOLE_RADIUS,
-    )
+        pygame.draw.circle(screen, S.RED, (int(hp.x), int(hp.y)), S.RED_HOLE_RADIUS)
 
-    draw_ball(screen, state.ball_pos, state.ball_angle_deg)
+    draw_goal(screen, (int(level.goal_hole.x), int(level.goal_hole.y)))
+    draw_ball(screen, state.ball_pos, state.ball_angle_deg, JOY_PRESS_B)
 
     if state.status == "won":
-        msg = font.render(
-            "YOU WIN! (R to restart)", True, S.GREEN_TEXT
-        )
+        msg = font.render("YOU WIN! (R to restart)", True, S.GREEN_TEXT)
         screen.blit(msg, (20, 20))
     elif state.status == "dead":
-        msg = font.render(
-            "YOU DIED! (R to restart)", True, S.RED_TEXT
-        )
+        msg = font.render("YOU DIED! (R to restart)", True, S.RED_TEXT)
         screen.blit(msg, (20, 20))
 
     pygame.display.flip()

@@ -2,7 +2,7 @@
   "level_id": "level01",
   "name": "Tutorial",
   "start_pos": [400, 300],
-  "win_hole": [400, 200],
+  "goal_hole": [400, 200],
   "red_holes": [[300, 180], [520, 360], [420, 520]],
   "wall_thickness": 10,
   "walls": [

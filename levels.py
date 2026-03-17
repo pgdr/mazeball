@@ -28,7 +28,7 @@ class Pos:
 class Level:
     level_id: str
     start_pos: Pos
-    win_hole: Pos
+    goal_hole: Pos
     red_holes: list[Pos]
     walls: list[tuple[Pos, Pos]]  # segments
     wall_thickness: float
@@ -61,7 +61,7 @@ def load_level(path: str, default_wall_thickness: float) -> Level:
     if not isinstance(data, dict):
         raise ValueError(f"{path}: top-level JSON must be an object")
 
-    _require_keys(data, ["level_id", "start_pos", "win_hole", "red_holes", "walls"], path)
+    _require_keys(data, ["level_id", "start_pos", "goal_hole", "red_holes", "walls"], path)
 
     level_id = data["level_id"]
     if not isinstance(level_id, str) or not level_id.strip():
@@ -72,7 +72,7 @@ def load_level(path: str, default_wall_thickness: float) -> Level:
         raise ValueError(f"{path}: 'name' must be a string if provided")
 
     start_pos = _as_pos(data["start_pos"], "start_pos", path)
-    win_hole = _as_pos(data["win_hole"], "win_hole", path)
+    goal_hole = _as_pos(data["goal_hole"], "goal_hole", path)
 
     red_holes_raw = data["red_holes"]
     if not isinstance(red_holes_raw, list):
@@ -105,7 +105,7 @@ def load_level(path: str, default_wall_thickness: float) -> Level:
         level_id=level_id,
         name=name,
         start_pos=start_pos,
-        win_hole=win_hole,
+        goal_hole=goal_hole,
         red_holes=red_holes,
         walls=walls,
         wall_thickness=wall_thickness,
